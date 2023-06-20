@@ -1,0 +1,110 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  apigw-sqs-lambda-sns
+
+Transform:
+- AWS::Serverless-2016-10-31
+
+Resources:
+
+  MySqsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: MySqsQueue
+
+  MyHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      AccessLogSettings:
+        DestinationArn: !GetAtt MyHttpApiAccessLogs.Arn
+        Format: '{ "requestId":"$context.requestId", "ip": "$context.identity.sourceIp", "requestTime":"$context.requestTime", "httpMethod":"$context.httpMethod","routeKey":"$context.routeKey", "status":"$context.status","protocol":"$context.protocol", "responseLength":"$context.responseLength" }'
+      DefinitionBody:
+        'Fn::Transform':
+          Name: 'AWS::Include'
+          Parameters:
+            Location: 'api.yaml'
+
+  SNSTopic:
+    Type: AWS::SNS::Topic
+
+  SQSLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: SQSLambdaFunction
+      Description: Lambda to be invoked by the SQS Queue
+      Handler: src/handlers/app.handler
+      Runtime: python3.10
+      MemorySize: 128
+      Architectures:
+        - x86_64
+      Timeout: 30
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !Ref SNSTopic
+      Policies:
+      - SNSPublishMessagePolicy:
+          TopicName: !GetAtt SNSTopic.TopicName
+      Events:
+        MySQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt MySqsQueue.Arn
+            BatchSize: 10
+
+
+  MyHttpApiRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - apigateway.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+      - PolicyName: AllowSqsIntegration
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - 'sqs:SendMessage'
+                - 'sqs:GetQueueUrl'
+                - 'sqs:SendMessageBatch'
+              Resource: !GetAtt MySqsQueue.Arn
+            - Effect: Allow
+              Action:
+                - 'logs:CreateLogGroup'
+                - 'logs:CreateLogStream'
+                - 'logs:DescribeLogGroups'
+                - 'logs:DescribeLogStreams'
+                - 'logs:PutLogEvents'
+                - 'logs:GetLogEvents'
+                - 'logs:FilterLogEvents'
+              Resource: !GetAtt MyHttpApiAccessLogs.Arn
+
+  MyHttpApiAccessLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: MyHttpApi-Access-Logs
+      RetentionInDays: 1
+
+Outputs:
+  MyHttpApiEndpoint:
+    Description: "HTTP API endpoint"
+    Value: !Sub "https://${MyHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+
+  SQSLambdaFunction:
+    Description: SQSLambdaFunction function name
+    Value: !Ref SQSLambdaFunction
+
+  MySqsQueueARN:
+    Description: SQS queue ARN
+    Value: !GetAtt MySqsQueue.Arn
+
+  MySqsQueueURL:
+    Description: SQS queue URL
+    Value: !Ref MySqsQueue
